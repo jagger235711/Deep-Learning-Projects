@@ -379,38 +379,6 @@ def get_net(vocab_size, embedding_matrix, device="cuda"):
     
     return Net().to(device)
 
-    # 确保嵌入矩阵是张量类型
-    embedding_matrix = torch.tensor(embedding_matrix, dtype=torch.float32)
-
-    # 定义模型
-    model = nn.Sequential(
-        # 嵌入层：vocab_size+1个词，每个词嵌入为100维向量
-        nn.Embedding.from_pretrained(
-            embedding_matrix,
-            freeze=True,  # 不训练嵌入层参数
-            padding_idx=word2idx["<pad>"],  # 可选：指定填充索引
-        ),
-        nn.Dropout(0.2),
-        # LSTM层：输入特征100维，隐藏层128维，返回全部时间步输出
-        nn.LSTM(
-            input_size=100,
-            hidden_size=128,
-            batch_first=True,
-            bidirectional=True,
-            dropout=0.2,
-        ),
-        LSTMOutputExtractor(),
-        # nn.Dropout(0.2),
-        # 线性层：双向LSTM输出是256维(128*2)，映射到2维
-        nn.Linear(256, 2),
-    )
-
-    # 给模型添加num_classes属性，方便后续获取
-    model.num_classes = 2  # 关键：添加类别数属性
-    # 将模型移动到指定设备
-    model = model.to(device)
-    return model
-
 # %%
 get_net(vocab_size=vocab_size, embedding_matrix=embedding_matrix)
 
