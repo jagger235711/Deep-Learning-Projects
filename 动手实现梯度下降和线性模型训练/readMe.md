@@ -28,14 +28,13 @@ BFGS final loss: 0.004604025970992544 param_err: 3.988922119130701
 ![20250921100756](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20250921100756.png)
 ![20250921101354](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20250921101354.png)
 ![20250921100846](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20250921100846.png)
+---
 
 - 不足
   - loss下降太快
   - 对比不显著
 - 问题及原因分析
   - 为什么BFGS直接就是一条直线？
-
----
 
 1. loss下降太快是因为问题过于简单、超参数设计太好，想要减慢速度可以增加噪音强度、调整超参数
 2. BFGS是直线是因为直接用的最终结果，而不是每次更新，已修正
