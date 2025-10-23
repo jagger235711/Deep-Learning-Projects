@@ -5,6 +5,11 @@ import time
 from functools import partial
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
+import logging
+
+logging.basicConfig(
+    level=logging.DEBUG
+)
 
 np.random.seed(0)
 
@@ -23,6 +28,15 @@ def make_data(n=200, d=50, cond=10.0, sigma=0.1):
     wstar = np.random.randn(d)
     y = X.dot(wstar) + sigma * np.random.randn(n)
     return X, y, wstar
+
+
+def make_data_nonlinear_sigmoid(n=200, d=50, sigma=0.1):
+    X = np.random.randn(n, d)
+    wstar = np.random.randn(d)
+    z = X.dot(wstar)
+    y = 1 / (1 + np.exp(-z)) + sigma * np.random.randn(n)
+    return X, y, wstar
+
 
 # %% Optimization methods
 def mse_loss_and_grad(w, X, y):
@@ -56,6 +70,7 @@ def gradient_descent(X, y, w0=None, lr=1.0, max_iter=5000, tol=1e-8, record_ever
 # Data
 # X, y, wstar = make_data(n=500, d=50, cond=100.0, sigma=0.1)
 X, y, wstar = make_data(n=1000, d=200, cond=1000.0, sigma=0.5)
+# X, y, wstar = make_data_nonlinear_sigmoid(n=1000, d=50, sigma=0.1)
 
 n, d = X.shape
 
@@ -70,29 +85,31 @@ def pytorch_gradient_descent(X, y, w0=None, lr=1.0, max_iter=5000, tol=1e-8, rec
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     X_tensor = torch.from_numpy(X).float().to(device)
     y_tensor = torch.from_numpy(y).float().to(device)
-    
+
     w = torch.nn.Parameter(torch.tensor(w0, device=device) if w0 is not None 
                           else torch.zeros(X.shape[1], device=device))
     optimizer = torch.optim.SGD([w], lr=lr)
     history = {'loss': [], 'time': [], 'grad_norm': []}
     t0 = time.perf_counter()
-    
+
     for it in range(1, max_iter+1):
         optimizer.zero_grad()
-        y_pred = X_tensor @ w
+        logging.debug("X_tensor.dtype %s",X_tensor.dtype)
+        logging.debug("w.dtype %s",w.dtype)
+        y_pred = X_tensor @ w.float()
         loss = 0.5 * torch.mean((y_pred - y_tensor)**2)
         loss.backward()
         grad_norm = torch.norm(w.grad).item()
         optimizer.step()
-        
+
         if it % record_every == 0 or it == 1:
             history['loss'].append(loss.item())
             history['time'].append(time.perf_counter() - t0)
             history['grad_norm'].append(grad_norm)
-        
+
         if grad_norm < tol:
             break
-    
+
     return w.detach().cpu().numpy(), history
 
 # --- Original Gradient Descent ---
@@ -139,102 +156,41 @@ y_bfgs = X @ w_bfgs
 print("Manual GD final loss:", hist_gd['loss'][-1], "param_err:", np.linalg.norm(w_gd - wstar)) 
 print("PyTorch GD final loss:", hist_torch['loss'][-1], "param_err:", np.linalg.norm(w_torch - wstar))
 print("BFGS final loss:", obj(w_bfgs, X, y), "param_err:", np.linalg.norm(w_bfgs - wstar))
-# %%
-# --- Plot loss curves (loss vs time) ---
-plt.figure()
-plt.plot(hist_gd['time'], hist_gd['loss'], label='Manual GD', color='C0')
-plt.plot(hist_torch['time'], hist_torch['loss'], label='PyTorch GD', color='C2')
-plt.axhline(obj(w_bfgs, X, y), color='C1', linestyle='--', label='BFGS final')
-plt.xlabel('time (s)')
-plt.ylabel('loss')
-plt.yscale('log')
-plt.legend()
-plt.show()
 
 # %%
-# --- Plot 2: data + true curve + fitted curves ---
-plt.figure(figsize=(6, 4))
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
-# 取第一个特征作为横坐标
-x_axis = X[:, 0]
+# --- Step 1: 主成分分析（降到一维，用作横轴） ---
+pca = PCA(n_components=1)
+x_pca = pca.fit_transform(X).ravel()  # shape (n,)
 
-# 排序后绘制平滑曲线
-sort_idx = np.argsort(x_axis)
-x_sorted = x_axis[sort_idx]
+# --- Step 2: 按投影方向排序 ---
+sort_idx = np.argsort(x_pca)
+x_sorted = x_pca[sort_idx]
 
+# --- Step 3: 各模型预测 ---
 y_true = X @ wstar
 y_gd = X @ w_gd
 y_bfgs = X @ w_bfgs
+y_torch_pred = X @ w_torch  # 假设你也有 torch 拟合的权重
 
-plt.scatter(x_axis, y, s=20, alpha=0.6, label="Data (noisy)")
+# --- Step 4: 绘图 ---
+plt.figure(figsize=(12, 4))
+
+plt.scatter(x_pca, y, s=20, alpha=0.6, label="Data (noisy)")
 plt.plot(x_sorted, y_true[sort_idx], "k-", lw=2, label="True function")
 plt.plot(x_sorted, y_gd[sort_idx], "C0--", lw=2, label="Manual GD fit")
-plt.plot(x_sorted, y_torch[sort_idx], "C2:", lw=2, label="PyTorch GD fit")
+plt.plot(x_sorted, y_torch_pred[sort_idx], "C2:", lw=2, label="PyTorch GD fit")
 plt.plot(x_sorted, y_bfgs[sort_idx], "C1-.", lw=2, label="BFGS fit")
 
-plt.xlabel("X[:,0] (first feature)")
+plt.xlabel("1st Principal Component of X")
 plt.ylabel("y")
 plt.legend()
-plt.title("Data and Fits")
+plt.title("Data and Fits (projected onto PCA-1 direction)")
 plt.tight_layout()
 plt.show()
-
-# %%
-# --- Plot: side-by-side ---
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-# (1) Loss vs Time
-axes[0].plot(hist_gd["time"], hist_gd["loss"], label="Manual GD", color='C0')
-axes[0].plot(hist_torch["time"], hist_torch["loss"], label="PyTorch GD", color='C2')
-axes[0].axhline(obj(w_bfgs, X, y), color="C1", linestyle="--", label="BFGS final")
-axes[0].set_xlabel("time (s)")
-axes[0].set_ylabel("loss")
-axes[0].set_yscale("log")
-axes[0].legend()
-axes[0].set_title("Loss vs Time")
-
-# (2) Data and Fits
-x_axis = X[:, 0]
-sort_idx = np.argsort(x_axis)
-x_sorted = x_axis[sort_idx]
-
-y_true = X @ wstar
-y_gd = X @ w_gd
-y_bfgs = X @ w_bfgs
-
-axes[1].scatter(x_axis, y, s=20, alpha=0.6, label="Data (noisy)")
-axes[1].plot(x_sorted, y_true[sort_idx], "k-", lw=2, label="True function")
-axes[1].plot(x_sorted, y_gd[sort_idx], "C0--", lw=2, label="Manual GD fit")
-axes[1].plot(x_sorted, y_torch[sort_idx], "C2:", lw=2, label="PyTorch GD fit") 
-axes[1].plot(x_sorted, y_bfgs[sort_idx], "C1-.", lw=2, label="BFGS fit")
-axes[1].set_xlabel("X[:,0] (first feature)")
-axes[1].set_ylabel("y")
-axes[1].legend()
-axes[1].set_title("Data and Fits")
-
-plt.tight_layout()
-plt.show()
-
-# %%
-import pandas as pd
-
-# --- Compute metrics ---
-mse_gd = mse(y, y_gd)
-mse_bfgs = mse(y, y_bfgs)
-
-results = pd.DataFrame({
-    "Method": ["Manual GD", "PyTorch GD", "BFGS"],
-"Final Loss": [hist_gd['loss'][-1], hist_torch['loss'][-1], obj(w_bfgs, X, y)],
-"MSE": [mse_gd, mse(y, X @ w_torch), mse_bfgs],
-"Param Error (||w - w*||)": [
-    np.linalg.norm(w_gd - wstar),
-    np.linalg.norm(w_torch - wstar),
-    np.linalg.norm(w_bfgs - wstar)
-]
-})
-
-print("\n=== Results Comparison ===")
-print(results.to_string(index=False))
 
 # %%
 import time
@@ -331,47 +287,50 @@ for eps in eps_list:
         {
             "eps": eps,
             "GD_time": t_to_eps(hist_gd["loss"], hist_gd["time"], eps),
+            "torch_time": t_to_eps(hist_torch["loss"], hist_torch["time"], eps),
             "BFGS_time": t_to_eps(bfgs_hist["loss"], bfgs_hist["time"], eps),
         }
     )
 time_df = pd.DataFrame(rows)
 
 # 5) Plot side-by-side (loss vs time includes both histories)
-fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+fig, ax = plt.subplots(1, 1, figsize=(7, 4))
 
 # loss vs time
-axes[0].plot(hist_gd["time"], hist_gd["loss"], label="GD", lw=2)
-axes[0].plot(
-    bfgs_hist["time"], bfgs_hist["loss"], label="BFGS", lw=2, marker="o", markersize=4
+ax.plot(hist_gd["time"], hist_gd["loss"], label="GD", color="C0")
+ax.plot(hist_torch["time"], hist_torch["loss"], label="PyTorch GD", color="C1")
+ax.plot(
+    bfgs_hist["time"],
+    bfgs_hist["loss"],
+    label="BFGS",
+    color="C2",
 )
-axes[0].set_xlabel("time (s)")
-axes[0].set_ylabel("loss")
-axes[0].set_yscale("log")
-axes[0].legend()
-axes[0].set_title("Loss vs Time (both methods)")
+ax.set_xlabel("time (s)")
+ax.set_ylabel("loss")
+ax.set_yscale("log")
+ax.legend()
+ax.set_title("Loss vs Time (both methods)")
 
-# data & fits (use first feature or PCA projection)
-x_axis = X[:, 0]
-sort_idx = np.argsort(x_axis)
-axes[1].scatter(x_axis, y, s=18, alpha=0.5, label="Data")
-axes[1].plot(x_axis[sort_idx], (X @ wstar)[sort_idx], "k-", lw=2, label="True")
-axes[1].plot(x_axis[sort_idx], y_gd[sort_idx], "C0--", lw=2, label="GD")
-axes[1].plot(x_axis[sort_idx], y_bfgs[sort_idx], "C1-.", lw=2, label="BFGS")
-axes[1].legend()
-axes[1].set_title("Data & Fits")
 
-plt.tight_layout()
 plt.show()
 
 # 6) Pretty results table
 results = pd.DataFrame(
     {
-        "Method": ["Gradient Descent", "BFGS"],
-        "Final Loss": [hist_gd["loss"][-1], bfgs_hist["loss"][-1]],
-        "MSE": [mse_gd, mse_bfgs],
-        "Param Err": [param_err_gd, param_err_bfgs],
-        "Total Time (s)": [hist_gd["time"][-1], bfgs_total_time],
-        "Iters": [len(hist_gd["loss"]), res.nit],
+        "Method": ["Manual GD", "PyTorch GD", "BFGS"],
+        "Final Loss": [hist_gd["loss"][-1], hist_torch["loss"][-1], obj(w_bfgs, X, y)],
+        "MSE": [mse_gd, mse(y, X @ w_torch), mse_bfgs],
+        "Param Error (||w - w*||)": [
+            np.linalg.norm(w_gd - wstar),
+            np.linalg.norm(w_torch - wstar),
+            np.linalg.norm(w_bfgs - wstar),
+        ],
+        "Total Time (s)": [
+            hist_gd["time"][-1],
+            hist_torch["time"][-1],
+            bfgs_total_time,
+        ],
+        "Iters": [len(hist_gd["loss"]), len(hist_torch["loss"]), res.nit],
     }
 )
 print("\n=== Results Comparison ===")

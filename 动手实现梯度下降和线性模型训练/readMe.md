@@ -19,15 +19,22 @@
 - V1
 
 ```shell
-L (Lipschitz): 0.0020000000000000018
-BFGS success: False nit: 500 time: 0.10105513700545998 final loss: 0.004604025970992544
-GD final loss: 0.0046034566746033555 param_err: 3.9953010832936897
-BFGS final loss: 0.004604025970992544 param_err: 3.988922119130701
-```
 
-![20250921100756](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20250921100756.png)
-![20250921101354](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20250921101354.png)
-![20250921100846](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20250921100846.png)
+=== Results Comparison ===
+    Method  Final Loss      MSE  Param Error (||w - w*||)  Total Time (s)  Iters
+ Manual GD    0.100687 0.201374                 33.103624        0.251708    401
+PyTorch GD    0.100687 0.201374                 33.103626        1.140493    401
+      BFGS    0.100768 0.201536                 30.464252        0.560736    500
+
+=== Time-to-eps (s) ===
+     eps  GD_time  torch_time  BFGS_time
+0.010000 0.000886    0.005917   0.009019
+0.000100 0.087914    0.405645   0.510194
+0.000001 0.248542    1.126367        inf
+```
+![20251023203925](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20251023203925.png)
+
+![20251023203817](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20251023203817.png)
 ---
 
 - 不足
@@ -38,3 +45,17 @@ BFGS final loss: 0.004604025970992544 param_err: 3.988922119130701
 
 1. loss下降太快是因为问题过于简单、超参数设计太好，想要减慢速度可以增加噪音强度、调整超参数
 2. BFGS是直线是因为直接用的最终结果，而不是每次更新，已修正
+
+--- 
+## 改进实验
+- 目标函数使用非线性函数
+- 使用更复杂的模型去拟合
+- 使用GPU加速训练 
+
+## 结果
+![20251023203633](https://cdn.jsdelivr.net/gh/jagger235711/coooool@main/img/20251023203633.png)
+
+## 总结
+- 对于线性函数，梯度下降的性能要远好于拟牛顿法。因为线性函数的二阶导数是分段的常数，求二阶导数纯浪费性能
+- 对非线性函数，梯度下降和拟牛顿法的拟合效果差不多，但是拟牛顿法下降到相同loss所用时间要快于梯度下降
+- 拟牛顿法的性能开销要大于梯度下降法，但是这里的神经网络较简单体现不出来
