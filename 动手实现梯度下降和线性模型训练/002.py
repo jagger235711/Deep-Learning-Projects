@@ -54,12 +54,12 @@ def train(model, optimizer, max_iter=500, record_loss=True, name=""):
 # --- Step 4: 训练 - SGD ---
 model_gd = MLP().to(device)
 optimizer_gd = optim.SGD(model_gd.parameters(), lr=0.01, momentum=0.9)
-losses_gd, time_gd, iters_gd = train(model_gd, optimizer_gd, max_iter=1000)
+losses_gd, time_gd, iters_gd = train(model_gd, optimizer_gd, max_iter=2000)
 
 # --- Step 5: 训练 - L-BFGS ---
 model_bfgs = MLP().to(device)
 optimizer_bfgs = optim.LBFGS(
-    model_bfgs.parameters(), lr=0.8, max_iter=100, history_size=10
+    model_bfgs.parameters(), lr=0.8, max_iter=500, history_size=10
 )
 
 losses_bfgs = []
