@@ -12,6 +12,8 @@ from torchvision.models import resnet18
 import torch.nn.functional as F
 from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.cuda.amp import GradScaler, autocast
+import gc
 
 # %%
 # 设置随机种子
@@ -19,7 +21,9 @@ torch.manual_seed(42)
 np.random.seed(42)
 
 # 检查是否有GPU可用
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+device = torch.device("cpu")
 print(f"Using device: {device}")
 
 # %%
@@ -91,27 +95,50 @@ class TabularResNet(nn.Module):
         self.input_dim = input_dim
 
         # 使用预训练的ResNet18作为特征提取器
-        self.resnet = resnet18(pretrained=True)
+        self.resnet = resnet18(pretrained=False)  # 使用预训练权重
 
         # 修改第一层以适应输入维度
-        self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.resnet.conv1 = nn.Conv2d(1, 32, kernel_size=7, stride=2, padding=3, bias=False)  # 减少通道数
+
+        # 添加通道转换层，将32通道转换为64通道以匹配预训练权重
+        self.channel_converter = nn.Conv2d(32, 64, kernel_size=1, stride=1, padding=0, bias=False)
+        self.bn_converter = nn.BatchNorm2d(64)
 
         # 修改全连接层
         self.resnet.fc = nn.Linear(512, num_classes)
         self.dropout = nn.Dropout(0.3)  # 添加Dropout层
 
-        # 添加适应层将表格数据转换为图像格式
+        # 添加适应层将表格数据转换为图像格式（减小尺寸）
         self.adapt_layer = nn.Sequential(
-            nn.Linear(input_dim, 224 * 224),
+            nn.Linear(input_dim, 128 * 128),  # 减小到128x128
             nn.ReLU(),
             nn.Dropout(0.2),  # 添加Dropout层
-            nn.Unflatten(1, (1, 224, 224))
+            nn.Unflatten(1, (1, 128, 128))
         )
 
     def forward(self, x):
         # 适应输入形状
         x = self.adapt_layer(x)
-        x = self.resnet(x)
+
+        # 通过修改后的第一层卷积（32通道）
+        x = self.resnet.conv1(x)
+        x = F.relu(x)
+        x = self.resnet.maxpool(x)
+
+        # 通过通道转换层（32->64通道）
+        x = self.channel_converter(x)
+        x = self.bn_converter(x)
+        x = F.relu(x)
+
+        # 通过ResNet剩余部分
+        x = self.resnet.layer1(x)
+        x = self.resnet.layer2(x)
+        x = self.resnet.layer3(x)
+        x = self.resnet.layer4(x)
+        x = self.resnet.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.resnet.fc(x)
+
         x = self.dropout(x)  # 应用Dropout
         return x
 
@@ -185,8 +212,8 @@ for fold, (trn_idx, val_idx) in enumerate(kf.split(X)):
     train_dataset = TensorDataset(X_tr, y_tr)
     val_dataset = TensorDataset(X_val, y_val)
 
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
     # 初始化模型和优化器
     model = TabularResNet(input_dim).to(device)
@@ -197,30 +224,42 @@ for fold, (trn_idx, val_idx) in enumerate(kf.split(X)):
 
     # 训练循环
     best_val_loss = float('inf')
-    for epoch in range(10):
+    for epoch in range(3):
         model.train()
         train_loss = 0.0
 
         # 添加进度条
         train_loader_with_progress = tqdm(train_loader, desc=f"Fold {fold+1} - Training", leave=False)
 
-        for batch_X, batch_y in train_loader_with_progress:
+        # 添加梯度累积
+        accumulation_steps = 2
+        optimizer.zero_grad()
+
+        for batch_idx, (batch_X, batch_y) in enumerate(train_loader_with_progress):
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
 
-            optimizer.zero_grad()
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
+            # 混合精度训练
+            with autocast():
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss = loss / accumulation_steps  # 缩放损失
+
+            # 反向传播
             loss.backward()
-            optimizer.step()
 
-            train_loss += loss.item()
-            train_loader_with_progress.set_postfix(loss=loss.item())
+            # 梯度累积
+            if (batch_idx + 1) % accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
 
-        # 学习率调度
-        if epoch < 5:  # warmup阶段
-            warmup_scheduler.step()
-        else:  # cosine衰减阶段
-            cosine_scheduler.step()
+            train_loss += loss.item() * accumulation_steps  # 还原损失尺度
+            train_loader_with_progress.set_postfix(loss=loss.item() * accumulation_steps)
+
+        # # 学习率调度
+        # if epoch < 5:  # warmup阶段
+        #     warmup_scheduler.step()
+        # else:  # cosine衰减阶段
+        #     cosine_scheduler.step()
 
         # 验证
         model.eval()
@@ -235,6 +274,11 @@ for fold, (trn_idx, val_idx) in enumerate(kf.split(X)):
         val_loss /= len(val_loader)
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch+1}, Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
+
+        # 内存清理
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            gc.collect()
 
         # 早停检查
         early_stopping(val_loss)
